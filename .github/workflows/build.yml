@@ -17,6 +17,99 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Add FlyingFox to Xcode project
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import secrets
+
+          path = Path("DarkAI.xcodeproj/project.pbxproj")
+          s = path.read_text()
+
+          # Generate valid 24-character Xcode object IDs
+          package_id = secrets.token_hex(12).upper()
+          product_id = secrets.token_hex(12).upper()
+          buildfile_id = secrets.token_hex(12).upper()
+
+          # 1. Add package reference to the project
+          old = '''packageReferences = (
+              D5B592C52FF1D16B00788D64 /* XCRemoteSwiftPackageReference "llama.swift" */,
+          );'''
+
+          new = '''packageReferences = (
+              D5B592C52FF1D16B00788D64 /* XCRemoteSwiftPackageReference "llama.swift" */,
+              PACKAGE_ID /* XCRemoteSwiftPackageReference "FlyingFox" */,
+          );'''.replace("PACKAGE_ID", package_id)
+
+          if old not in s:
+              raise SystemExit("Could not find packageReferences section")
+          s = s.replace(old, new, 1)
+
+          # 2. Add FlyingFox product to DarkAI target
+          old = '''packageProductDependencies = (
+              D5B592C62FF1D16B00788D64 /* LlamaSwift */,
+          );'''
+
+          new = '''packageProductDependencies = (
+              D5B592C62FF1D16B00788D64 /* LlamaSwift */,
+              PRODUCT_ID /* FlyingFox */,
+          );'''.replace("PRODUCT_ID", product_id)
+
+          if old not in s:
+              raise SystemExit("Could not find packageProductDependencies")
+          s = s.replace(old, new, 1)
+
+          # 3. Add FlyingFox to the Frameworks build phase
+          old = '''files = (
+              D46061302FF7273F0064DFE7 /* LlamaSwift in Frameworks */,
+              7A2D07A146BD83F60AB8384A /* StableDiffusion.xcframework in Frameworks */,'''
+
+          new = '''files = (
+              D46061302FF7273F0064DFE7 /* LlamaSwift in Frameworks */,
+              BUILDFILE_ID /* FlyingFox in Frameworks */,
+              7A2D07A146BD83F60AB8384A /* StableDiffusion.xcframework in Frameworks */,'''.replace("BUILDFILE_ID", buildfile_id)
+
+          if old not in s:
+              raise SystemExit("Could not find Frameworks build phase")
+          s = s.replace(old, new, 1)
+
+          # 4. Add PBXBuildFile
+          marker = "/* End PBXBuildFile section */"
+          insertion = f'''        {buildfile_id} /* FlyingFox in Frameworks */ = {{isa = PBXBuildFile; productRef = {product_id} /* FlyingFox */; }};
+          '''
+          s = s.replace(marker, insertion + marker, 1)
+
+          # 5. Add Swift package reference + product dependency
+          marker = "/* End XCRemoteSwiftPackageReference section */"
+
+          package_block = f'''        {package_id} /* XCRemoteSwiftPackageReference "FlyingFox" */ = {{
+              isa = XCRemoteSwiftPackageReference;
+              repositoryURL = "https://github.com/swhitty/FlyingFox.git";
+              requirement = {{
+                  kind = upToNextMinorVersion;
+                  minimumVersion = 0.27.1;
+              }};
+          }};
+          '''
+
+          s = s.replace(marker, package_block + marker, 1)
+
+          marker = "/* End XCSwiftPackageProductDependency section */"
+
+          product_block = f'''        {product_id} /* FlyingFox */ = {{
+              isa = XCSwiftPackageProductDependency;
+              package = {package_id} /* XCRemoteSwiftPackageReference "FlyingFox" */;
+              productName = FlyingFox;
+          }};
+          '''
+
+          s = s.replace(marker, product_block + marker, 1)
+
+          path.write_text(s)
+          print("FlyingFox added successfully.")
+          PY
+
       - name: Resolve Swift packages
         run: |
           xcodebuild \
