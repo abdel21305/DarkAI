@@ -8,82 +8,107 @@ jobs:
     runs-on: macos-26
 
     steps:
+
+      # --------------------------------------------------
+      # 1. Récupération du projet
+      # --------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # --------------------------------------------------
+      # 2. Xcode
+      # --------------------------------------------------
       - name: Select Xcode 26.6
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
 
       - name: Show Xcode version
-        run: xcodebuild -version
+        run: |
+          xcodebuild -version
 
+
+      # --------------------------------------------------
+      # 3. Ajouter FlyingFox au projet Xcode
+      # --------------------------------------------------
       - name: Add FlyingFox to Xcode project
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import re
-          import secrets
 
           path = Path("DarkAI.xcodeproj/project.pbxproj")
           s = path.read_text()
 
-          # Generate valid 24-character Xcode object IDs
-          package_id = secrets.token_hex(12).upper()
-          product_id = secrets.token_hex(12).upper()
-          buildfile_id = secrets.token_hex(12).upper()
+          PACKAGE_ID = "E11111111111111111111111"
+          PRODUCT_ID = "E22222222222222222222222"
+          BUILD_ID = "E33333333333333333333333"
 
-          # 1. Add package reference to the project
-          old = '''packageReferences = (
-              D5B592C52FF1D16B00788D64 /* XCRemoteSwiftPackageReference "llama.swift" */,
-          );'''
+          # ==================================================
+          # PBXBuildFile
+          # ==================================================
 
-          new = '''packageReferences = (
-              D5B592C52FF1D16B00788D64 /* XCRemoteSwiftPackageReference "llama.swift" */,
-              PACKAGE_ID /* XCRemoteSwiftPackageReference "FlyingFox" */,
-          );'''.replace("PACKAGE_ID", package_id)
+          start = s.index("/* Begin PBXBuildFile section */")
+          end = s.index("/* End PBXBuildFile section */", start)
 
-          if old not in s:
-              raise SystemExit("Could not find packageReferences section")
-          s = s.replace(old, new, 1)
+          section = s[start:end]
 
-          # 2. Add FlyingFox product to DarkAI target
-          old = '''packageProductDependencies = (
-              D5B592C62FF1D16B00788D64 /* LlamaSwift */,
-          );'''
+          if "/* FlyingFox in Frameworks */" not in section:
 
-          new = '''packageProductDependencies = (
-              D5B592C62FF1D16B00788D64 /* LlamaSwift */,
-              PRODUCT_ID /* FlyingFox */,
-          );'''.replace("PRODUCT_ID", product_id)
+              block = f"""    {BUILD_ID} /* FlyingFox in Frameworks */ = {{
+              isa = PBXBuildFile;
+              productRef = {PRODUCT_ID} /* FlyingFox */;
+          }};
+          """
 
-          if old not in s:
-              raise SystemExit("Could not find packageProductDependencies")
-          s = s.replace(old, new, 1)
+              s = s[:end] + block + s[end:]
 
-          # 3. Add FlyingFox to the Frameworks build phase
-          old = '''files = (
-              D46061302FF7273F0064DFE7 /* LlamaSwift in Frameworks */,
-              7A2D07A146BD83F60AB8384A /* StableDiffusion.xcframework in Frameworks */,'''
 
-          new = '''files = (
-              D46061302FF7273F0064DFE7 /* LlamaSwift in Frameworks */,
-              BUILDFILE_ID /* FlyingFox in Frameworks */,
-              7A2D07A146BD83F60AB8384A /* StableDiffusion.xcframework in Frameworks */,'''.replace("BUILDFILE_ID", buildfile_id)
+          # ==================================================
+          # PBXFrameworksBuildPhase
+          # ==================================================
 
-          if old not in s:
-              raise SystemExit("Could not find Frameworks build phase")
-          s = s.replace(old, new, 1)
+          start = s.index("/* Begin PBXFrameworksBuildPhase section */")
+          end = s.index("/* End PBXFrameworksBuildPhase section */", start)
 
-          # 4. Add PBXBuildFile
-          marker = "/* End PBXBuildFile section */"
-          insertion = f'''        {buildfile_id} /* FlyingFox in Frameworks */ = {{isa = PBXBuildFile; productRef = {product_id} /* FlyingFox */; }};
-          '''
-          s = s.replace(marker, insertion + marker, 1)
+          section = s[start:end]
 
-          # 5. Add Swift package reference + product dependency
-          marker = "/* End XCRemoteSwiftPackageReference section */"
+          if "/* FlyingFox in Frameworks */" not in section:
 
-          package_block = f'''        {package_id} /* XCRemoteSwiftPackageReference "FlyingFox" */ = {{
+              marker = "        files = (\n"
+
+              if marker not in section:
+                  raise RuntimeError(
+                      "Impossible de trouver la section files de PBXFrameworksBuildPhase"
+                  )
+
+              section = section.replace(
+                  marker,
+                  marker +
+                  f"            {BUILD_ID} /* FlyingFox in Frameworks */,\n",
+                  1
+              )
+
+              s = s[:start] + section + s[end:]
+
+
+          # ==================================================
+          # XCRemoteSwiftPackageReference
+          # ==================================================
+
+          start = s.index(
+              "/* Begin XCRemoteSwiftPackageReference section */"
+          )
+
+          end = s.index(
+              "/* End XCRemoteSwiftPackageReference section */",
+              start
+          )
+
+          section = s[start:end]
+
+          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in section:
+
+              block = f"""    {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */ = {{
               isa = XCRemoteSwiftPackageReference;
               repositoryURL = "https://github.com/swhitty/FlyingFox.git";
               requirement = {{
@@ -91,36 +116,160 @@ jobs:
                   minimumVersion = 0.27.1;
               }};
           }};
-          '''
+          """
 
-          s = s.replace(marker, package_block + marker, 1)
+              s = s[:end] + block + s[end:]
 
-          marker = "/* End XCSwiftPackageProductDependency section */"
 
-          product_block = f'''        {product_id} /* FlyingFox */ = {{
+          # ==================================================
+          # PBXProject packageReferences
+          # ==================================================
+
+          start = s.index("/* Begin PBXProject section */")
+          end = s.index("/* End PBXProject section */", start)
+
+          section = s[start:end]
+
+          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in section:
+
+              marker = "        packageReferences = (\n"
+
+              if marker not in section:
+                  raise RuntimeError(
+                      "Impossible de trouver packageReferences"
+                  )
+
+              section = section.replace(
+                  marker,
+                  marker +
+                  f'            {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */,\n',
+                  1
+              )
+
+              s = s[:start] + section + s[end:]
+
+
+          # ==================================================
+          # XCSwiftPackageProductDependency
+          # ==================================================
+
+          start = s.index(
+              "/* Begin XCSwiftPackageProductDependency section */"
+          )
+
+          end = s.index(
+              "/* End XCSwiftPackageProductDependency section */",
+              start
+          )
+
+          section = s[start:end]
+
+          if "/* FlyingFox */ = {" not in section:
+
+              block = f"""    {PRODUCT_ID} /* FlyingFox */ = {{
               isa = XCSwiftPackageProductDependency;
-              package = {package_id} /* XCRemoteSwiftPackageReference "FlyingFox" */;
+              package = {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */;
               productName = FlyingFox;
           }};
-          '''
+          """
 
-          s = s.replace(marker, product_block + marker, 1)
+              s = s[:end] + block + s[end:]
+
+
+          # ==================================================
+          # PBXNativeTarget packageProductDependencies
+          # ==================================================
+
+          start = s.index("/* Begin PBXNativeTarget section */")
+          end = s.index("/* End PBXNativeTarget section */", start)
+
+          section = s[start:end]
+
+          if f"{PRODUCT_ID} /* FlyingFox */," not in section:
+
+              marker = "        packageProductDependencies = (\n"
+
+              if marker not in section:
+                  raise RuntimeError(
+                      "Impossible de trouver packageProductDependencies"
+                  )
+
+              section = section.replace(
+                  marker,
+                  marker +
+                  f"            {PRODUCT_ID} /* FlyingFox */,\n",
+                  1
+              )
+
+              s = s[:start] + section + s[end:]
+
+
+          # ==================================================
+          # Sauvegarde
+          # ==================================================
 
           path.write_text(s)
-          print("FlyingFox added successfully.")
+
+          print("==========================================")
+          print("FlyingFox ajouté au projet Xcode")
+          print("==========================================")
           PY
 
+
+      # --------------------------------------------------
+      # 4. Vérification du projet
+      # --------------------------------------------------
+      - name: Validate Xcode project
+        run: |
+          plutil -lint DarkAI.xcodeproj/project.pbxproj
+
+          echo ""
+          echo "=========================================="
+          echo "Références FlyingFox"
+          echo "=========================================="
+
+          grep -n "FlyingFox" DarkAI.xcodeproj/project.pbxproj
+
+          echo ""
+          echo "Projet Xcode valide."
+
+
+      # --------------------------------------------------
+      # 5. Résolution des packages Swift
+      # --------------------------------------------------
       - name: Resolve Swift packages
         run: |
           xcodebuild \
             -resolvePackageDependencies \
-            -project DarkAI.xcodeproj
+            -project DarkAI.xcodeproj \
+            -clonedSourcePackagesDirPath "$PWD/.spm"
 
+
+      # --------------------------------------------------
+      # 6. Construction StableDiffusion
+      # --------------------------------------------------
       - name: Build StableDiffusion XCFramework
         run: |
           chmod +x build_sd_ios.sh
           ./build_sd_ios.sh
 
+
+      # --------------------------------------------------
+      # 7. Vérifier StableDiffusion
+      # --------------------------------------------------
+      - name: Verify StableDiffusion
+        run: |
+          if [ ! -d "StableDiffusion.xcframework" ]; then
+            echo "ERREUR : StableDiffusion.xcframework absent"
+            exit 1
+          fi
+
+          echo "StableDiffusion.xcframework OK"
+
+
+      # --------------------------------------------------
+      # 8. Compilation DarkAI sans signature
+      # --------------------------------------------------
       - name: Build unsigned app
         run: |
           xcodebuild \
@@ -129,6 +278,8 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
+            -clonedSourcePackagesDirPath "$PWD/.spm" \
+            SWIFT_CXX_INTEROPERABILITY_MODE=default \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
@@ -136,12 +287,44 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
+
+      # --------------------------------------------------
+      # 9. Création de l'IPA
+      # --------------------------------------------------
       - name: Create IPA
         run: |
+          rm -rf Payload
+          rm -f DarkAI.ipa
+
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/DarkAI.app Payload/
+
+          cp -R \
+            build/Build/Products/Release-iphoneos/DarkAI.app \
+            Payload/
+
           zip -r DarkAI.ipa Payload
 
+
+      # --------------------------------------------------
+      # 10. Vérification IPA
+      # --------------------------------------------------
+      - name: Verify IPA
+        run: |
+          if [ ! -f "DarkAI.ipa" ]; then
+            echo "ERREUR : DarkAI.ipa n'a pas été créée"
+            exit 1
+          fi
+
+          ls -lh DarkAI.ipa
+
+          echo "=========================================="
+          echo "IPA créée avec succès"
+          echo "=========================================="
+
+
+      # --------------------------------------------------
+      # 11. Envoyer l'IPA dans les Artifacts GitHub
+      # --------------------------------------------------
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
