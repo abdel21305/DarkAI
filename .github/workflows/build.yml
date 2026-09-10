@@ -8,33 +8,20 @@ jobs:
     runs-on: macos-26
 
     steps:
-
-      # --------------------------------------------------
-      # 1. Récupération du projet
-      # --------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # --------------------------------------------------
-      # 2. Xcode
-      # --------------------------------------------------
       - name: Select Xcode 26.6
-        run: |
-          sudo xcode-select -s /Applications/Xcode_26.6.app
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
 
       - name: Show Xcode version
-        run: |
-          xcodebuild -version
+        run: xcodebuild -version
 
-
-      # --------------------------------------------------
-      # 3. Ajouter FlyingFox au projet Xcode
-      # --------------------------------------------------
       - name: Add FlyingFox to Xcode project
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("DarkAI.xcodeproj/project.pbxproj")
           s = path.read_text()
@@ -43,200 +30,149 @@ jobs:
           PRODUCT_ID = "E22222222222222222222222"
           BUILD_ID = "E33333333333333333333333"
 
-          # ==================================================
+          def section(name):
+              begin = f"/* Begin {name} section */"
+              end = f"/* End {name} section */"
+              a = s.index(begin)
+              b = s.index(end, a)
+              return a, b
+
+          # --------------------------------------------------
           # PBXBuildFile
-          # ==================================================
+          # --------------------------------------------------
+          a, b = section("PBXBuildFile")
+          part = s[a:b]
 
-          start = s.index("/* Begin PBXBuildFile section */")
-          end = s.index("/* End PBXBuildFile section */", start)
+          if "/* FlyingFox in Frameworks */" not in part:
+              block = (
+                  f"    {BUILD_ID} /* FlyingFox in Frameworks */ = {{\n"
+                  f"        isa = PBXBuildFile;\n"
+                  f"        productRef = {PRODUCT_ID} /* FlyingFox */;\n"
+                  f"    }};\n"
+              )
+              s = s[:b] + block + s[b:]
 
-          section = s[start:end]
-
-          if "/* FlyingFox in Frameworks */" not in section:
-
-              block = f"""    {BUILD_ID} /* FlyingFox in Frameworks */ = {{
-              isa = PBXBuildFile;
-              productRef = {PRODUCT_ID} /* FlyingFox */;
-          }};
-          """
-
-              s = s[:end] + block + s[end:]
-
-
-          # ==================================================
+          # --------------------------------------------------
           # PBXFrameworksBuildPhase
-          # ==================================================
+          # --------------------------------------------------
+          a, b = section("PBXFrameworksBuildPhase")
+          part = s[a:b]
 
-          start = s.index("/* Begin PBXFrameworksBuildPhase section */")
-          end = s.index("/* End PBXFrameworksBuildPhase section */", start)
+          if "/* FlyingFox in Frameworks */" not in part:
+              match = re.search(r"(\bfiles\s*=\s*\(\s*\n)", part)
 
-          section = s[start:end]
-
-          if "/* FlyingFox in Frameworks */" not in section:
-
-              marker = "        files = (\n"
-
-              if marker not in section:
+              if not match:
                   raise RuntimeError(
-                      "Impossible de trouver la section files de PBXFrameworksBuildPhase"
+                      "PBXFrameworksBuildPhase trouvé, mais tableau files introuvable."
                   )
 
-              section = section.replace(
-                  marker,
-                  marker +
-                  f"            {BUILD_ID} /* FlyingFox in Frameworks */,\n",
-                  1
+              pos = a + match.end()
+
+              line = (
+                  f"            {BUILD_ID} /* FlyingFox in Frameworks */,\n"
               )
 
-              s = s[:start] + section + s[end:]
+              s = s[:pos] + line + s[pos:]
 
-
-          # ==================================================
+          # --------------------------------------------------
           # XCRemoteSwiftPackageReference
-          # ==================================================
+          # --------------------------------------------------
+          a, b = section("XCRemoteSwiftPackageReference")
+          part = s[a:b]
 
-          start = s.index(
-              "/* Begin XCRemoteSwiftPackageReference section */"
-          )
-
-          end = s.index(
-              "/* End XCRemoteSwiftPackageReference section */",
-              start
-          )
-
-          section = s[start:end]
-
-          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in section:
-
-              block = f"""    {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */ = {{
-              isa = XCRemoteSwiftPackageReference;
-              repositoryURL = "https://github.com/swhitty/FlyingFox.git";
-              requirement = {{
-                  kind = upToNextMinorVersion;
-                  minimumVersion = 0.27.1;
-              }};
-          }};
-          """
-
-              s = s[:end] + block + s[end:]
-
-
-          # ==================================================
-          # PBXProject packageReferences
-          # ==================================================
-
-          start = s.index("/* Begin PBXProject section */")
-          end = s.index("/* End PBXProject section */", start)
-
-          section = s[start:end]
-
-          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in section:
-
-              marker = "        packageReferences = (\n"
-
-              if marker not in section:
-                  raise RuntimeError(
-                      "Impossible de trouver packageReferences"
-                  )
-
-              section = section.replace(
-                  marker,
-                  marker +
-                  f'            {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */,\n',
-                  1
+          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in part:
+              block = (
+                  f'    {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */ = {{\n'
+                  f"        isa = XCRemoteSwiftPackageReference;\n"
+                  f'        repositoryURL = "https://github.com/swhitty/FlyingFox.git";\n'
+                  f"        requirement = {{\n"
+                  f"            kind = upToNextMajorVersion;\n"
+                  f"            minimumVersion = 0.27.1;\n"
+                  f"        }};\n"
+                  f"    }};\n"
               )
 
-              s = s[:start] + section + s[end:]
+              s = s[:b] + block + s[b:]
 
+          # --------------------------------------------------
+          # PBXProject / packageReferences
+          # --------------------------------------------------
+          a, b = section("PBXProject")
+          part = s[a:b]
 
-          # ==================================================
+          if 'XCRemoteSwiftPackageReference "FlyingFox"' not in part:
+              match = re.search(
+                  r"(\bpackageReferences\s*=\s*\(\s*\n)",
+                  part
+              )
+
+              if not match:
+                  raise RuntimeError(
+                      "packageReferences introuvable dans PBXProject."
+                  )
+
+              pos = a + match.end()
+
+              line = (
+                  f'            {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */,\n'
+              )
+
+              s = s[:pos] + line + s[pos:]
+
+          # --------------------------------------------------
           # XCSwiftPackageProductDependency
-          # ==================================================
+          # --------------------------------------------------
+          a, b = section("XCSwiftPackageProductDependency")
+          part = s[a:b]
 
-          start = s.index(
-              "/* Begin XCSwiftPackageProductDependency section */"
-          )
-
-          end = s.index(
-              "/* End XCSwiftPackageProductDependency section */",
-              start
-          )
-
-          section = s[start:end]
-
-          if "/* FlyingFox */ = {" not in section:
-
-              block = f"""    {PRODUCT_ID} /* FlyingFox */ = {{
-              isa = XCSwiftPackageProductDependency;
-              package = {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */;
-              productName = FlyingFox;
-          }};
-          """
-
-              s = s[:end] + block + s[end:]
-
-
-          # ==================================================
-          # PBXNativeTarget packageProductDependencies
-          # ==================================================
-
-          start = s.index("/* Begin PBXNativeTarget section */")
-          end = s.index("/* End PBXNativeTarget section */", start)
-
-          section = s[start:end]
-
-          if f"{PRODUCT_ID} /* FlyingFox */," not in section:
-
-              marker = "        packageProductDependencies = (\n"
-
-              if marker not in section:
-                  raise RuntimeError(
-                      "Impossible de trouver packageProductDependencies"
-                  )
-
-              section = section.replace(
-                  marker,
-                  marker +
-                  f"            {PRODUCT_ID} /* FlyingFox */,\n",
-                  1
+          if "/* FlyingFox */ = {" not in part:
+              block = (
+                  f"    {PRODUCT_ID} /* FlyingFox */ = {{\n"
+                  f"        isa = XCSwiftPackageProductDependency;\n"
+                  f'        package = {PACKAGE_ID} /* XCRemoteSwiftPackageReference "FlyingFox" */;\n'
+                  f"        productName = FlyingFox;\n"
+                  f"    }};\n"
               )
 
-              s = s[:start] + section + s[end:]
+              s = s[:b] + block + s[b:]
 
+          # --------------------------------------------------
+          # PBXNativeTarget / packageProductDependencies
+          # --------------------------------------------------
+          a, b = section("PBXNativeTarget")
+          part = s[a:b]
 
-          # ==================================================
-          # Sauvegarde
-          # ==================================================
+          if f"{PRODUCT_ID} /* FlyingFox */," not in part:
+              match = re.search(
+                  r"(\bpackageProductDependencies\s*=\s*\(\s*\n)",
+                  part
+              )
+
+              if not match:
+                  raise RuntimeError(
+                      "packageProductDependencies introuvable."
+                  )
+
+              pos = a + match.end()
+
+              line = (
+                  f"            {PRODUCT_ID} /* FlyingFox */,\n"
+              )
+
+              s = s[:pos] + line + s[pos:]
 
           path.write_text(s)
 
-          print("==========================================")
-          print("FlyingFox ajouté au projet Xcode")
-          print("==========================================")
+          print("FlyingFox ajouté au projet.")
           PY
 
-
-      # --------------------------------------------------
-      # 4. Vérification du projet
-      # --------------------------------------------------
       - name: Validate Xcode project
         run: |
           plutil -lint DarkAI.xcodeproj/project.pbxproj
 
-          echo ""
-          echo "=========================================="
-          echo "Références FlyingFox"
-          echo "=========================================="
-
+          echo "===== FlyingFox ====="
           grep -n "FlyingFox" DarkAI.xcodeproj/project.pbxproj
 
-          echo ""
-          echo "Projet Xcode valide."
-
-
-      # --------------------------------------------------
-      # 5. Résolution des packages Swift
-      # --------------------------------------------------
       - name: Resolve Swift packages
         run: |
           xcodebuild \
@@ -244,32 +180,16 @@ jobs:
             -project DarkAI.xcodeproj \
             -clonedSourcePackagesDirPath "$PWD/.spm"
 
-
-      # --------------------------------------------------
-      # 6. Construction StableDiffusion
-      # --------------------------------------------------
       - name: Build StableDiffusion XCFramework
         run: |
           chmod +x build_sd_ios.sh
           ./build_sd_ios.sh
 
-
-      # --------------------------------------------------
-      # 7. Vérifier StableDiffusion
-      # --------------------------------------------------
       - name: Verify StableDiffusion
         run: |
-          if [ ! -d "StableDiffusion.xcframework" ]; then
-            echo "ERREUR : StableDiffusion.xcframework absent"
-            exit 1
-          fi
-
+          test -d StableDiffusion.xcframework
           echo "StableDiffusion.xcframework OK"
 
-
-      # --------------------------------------------------
-      # 8. Compilation DarkAI sans signature
-      # --------------------------------------------------
       - name: Build unsigned app
         run: |
           xcodebuild \
@@ -287,15 +207,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
-
-      # --------------------------------------------------
-      # 9. Création de l'IPA
-      # --------------------------------------------------
       - name: Create IPA
         run: |
-          rm -rf Payload
-          rm -f DarkAI.ipa
-
+          rm -rf Payload DarkAI.ipa
           mkdir -p Payload
 
           cp -R \
@@ -304,27 +218,12 @@ jobs:
 
           zip -r DarkAI.ipa Payload
 
-
-      # --------------------------------------------------
-      # 10. Vérification IPA
-      # --------------------------------------------------
       - name: Verify IPA
         run: |
-          if [ ! -f "DarkAI.ipa" ]; then
-            echo "ERREUR : DarkAI.ipa n'a pas été créée"
-            exit 1
-          fi
-
+          test -f DarkAI.ipa
           ls -lh DarkAI.ipa
+          echo "IPA créée avec succès."
 
-          echo "=========================================="
-          echo "IPA créée avec succès"
-          echo "=========================================="
-
-
-      # --------------------------------------------------
-      # 11. Envoyer l'IPA dans les Artifacts GitHub
-      # --------------------------------------------------
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
