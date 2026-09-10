@@ -23,6 +23,11 @@ jobs:
             -resolvePackageDependencies \
             -project DarkAI.xcodeproj
 
+      - name: Build StableDiffusion XCFramework
+        run: |
+          chmod +x build_sd_ios.sh
+          ./build_sd_ios.sh
+
       - name: Build unsigned app
         run: |
           xcodebuild \
