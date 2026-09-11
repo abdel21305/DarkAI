@@ -1080,7 +1080,38 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         // documented to cost milliseconds regardless of file size.
         switch model.kind {
         case .chat:
-            try GGUFValidator.validate(path: url.path)
+    let chatHandle = try FileHandle(forReadingFrom: url)
+    defer { try? chatHandle.close() }
+
+    let magic = chatHandle.readData(ofLength: 4)
+    guard magic == Data([0x47, 0x47, 0x55, 0x46]) else {
+        throw NSError(
+            domain: "DarkAI.ModelValidation",
+            code: 1001,
+            userInfo: [NSLocalizedDescriptionKey: "The downloaded file is not a valid GGUF file."]
+        )
+    }
+
+    let versionData = chatHandle.readData(ofLength: 4)
+    guard versionData.count == 4 else {
+        throw NSError(
+            domain: "DarkAI.ModelValidation",
+            code: 1002,
+            userInfo: [NSLocalizedDescriptionKey: "The GGUF header is incomplete."]
+        )
+    }
+
+    let version = versionData.withUnsafeBytes {
+        $0.load(as: UInt32.self).littleEndian
+    }
+
+    guard version == 2 || version == 3 else {
+        throw NSError(
+            domain: "DarkAI.ModelValidation",
+            code: 1003,
+            userInfo: [NSLocalizedDescriptionKey: "Unsupported GGUF version \(version)."]
+        )
+    }
         case .diffusion:
             try GGUFValidator.validateDiffusionCheckpoint(path: url.path)
         case .coreML:
