@@ -1241,13 +1241,16 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
                     self.finish(model, with: nil)
                 }
             } catch {
-                try? FileManager.default.removeItem(at: temporaryCopy)
-                await MainActor.run {
-                    self.finish(model, with: error)
-                }
-            }
-        }
+    let errorDescription = error.localizedDescription
+
+    LogManager.shared.log(
+        "ModelDownload: INSTALL FAILED — \(model.displayName) — \(errorDescription)"
+    )
+
+    await MainActor.run {
+        self.finish(model, with: error)
     }
+}
 
     /// One file of a `.coreML` multi-file download has finished — verify its size, move it into
     /// place at its `relativePath`, and either continue the queue or (once every file has landed)
