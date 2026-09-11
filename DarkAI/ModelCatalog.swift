@@ -1145,12 +1145,28 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
             // (`verify`, the install-directory move) is real file I/O on what can be a
             // multi-gigabyte file, and used to run entirely inside one `@MainActor` hop, blocking
             // the main thread for however long that took.
-            let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainActor.run {
-                guard let model = self.modelsByTaskID[taskID] else { return nil }
-                let file = self.currentCoreMLFile[taskID]
-                if file != nil { self.currentCoreMLFile.removeValue(forKey: taskID) }
-                return (model, file)
-            }
+            let taskDescription = downloadTask.taskDescription
+
+let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainActor.run {
+    if let model = self.modelsByTaskID[taskID] {
+        let file = self.currentCoreMLFile[taskID]
+        if file != nil { self.currentCoreMLFile.removeValue(forKey: taskID) }
+        return (model, file)
+    }
+
+    // Recover the model after iOS has relaunched the app/background session.
+    guard let description = taskDescription,
+          let (modelID, coreMLPath) = Self.decodeTaskDescription(description),
+          let model = ModelCatalog.all.first(where: { $0.id == modelID }) else {
+        return nil
+    }
+
+    let file = coreMLPath.flatMap { path in
+        model.coreMLFiles.first(where: { $0.relativePath == path })
+    }
+
+    return (model, file)
+}
 
             guard let (model, coreMLFile) = lookup else {
                 try? FileManager.default.removeItem(at: temporaryCopy)
