@@ -1330,6 +1330,7 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
         }
     }
 
+}
     /// One file of a `.coreML` multi-file download has finished — verify its size, move it into
     /// place at its `relativePath`, and either continue the queue or (once every file has landed)
     /// finalize the whole model via `finalizeCoreMLDownload`.
