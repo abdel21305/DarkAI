@@ -547,10 +547,16 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     /// the most likely thing behind "I have to download the model again after every update".
     @Published private(set) var resumableModelIDs: Set<String> = []
 
-    /// Off by default. A ~1 GB download on a metered plan is not something to start on the
-    /// user's behalf without an explicit opt-in.
-    @Published var allowsCellularDownload: Bool = UserDefaults.standard.bool(forKey: "allowsCellularDownload") {
-        didSet { UserDefaults.standard.set(allowsCellularDownload, forKey: "allowsCellularDownload") }
+    /// Enabled by default so model downloads are not silently blocked on cellular networks.
+    /// Users can disable this in the app's download settings.
+    @Published var allowsCellularDownload: Bool =
+        UserDefaults.standard.object(forKey: "allowsCellularDownload") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(
+                allowsCellularDownload,
+                forKey: "allowsCellularDownload"
+            )
+        }
     }
 
     /// Populated by the app delegate when iOS relaunches the app to hand back a finished
@@ -581,12 +587,25 @@ final class ModelDownloadManager: NSObject, ObservableObject {
 
     private override init() {
         super.init()
-        let configuration = URLSessionConfiguration.background(withIdentifier: "com.DDT.DarkAI.modelDownloads")
-        configuration.allowsCellularAccess = true   // gated per-task instead, see `download(_:)`
+        let configuration = URLSessionConfiguration.background(
+            withIdentifier: "com.DDT.DarkAI.modelDownloads"
+        )
+        configuration.allowsCellularAccess = true
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
         configuration.waitsForConnectivity = true
-        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+
+        // Model files can be several gigabytes, so don't use a short request timeout.
+        configuration.timeoutIntervalForRequest = 300
+        configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
+
+        session = URLSession(
+            configuration: configuration,
+            delegate: self,
+            delegateQueue: nil
+        )
         resumableModelIDs = Self.savedResumableModelIDs()
 
         // A background `URLSession` survives the app being killed and relaunched by iOS to
@@ -801,6 +820,19 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     /// shared by the disk-space pre-flight in `download(_:)` (so a resumed download isn't refused
     /// for space it doesn't actually need) and `downloadCoreMLFiles` below (which does the same
     /// scan to decide what's actually left to fetch).
+    private func makeDownloadRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.allowsCellularAccess = allowsCellularDownload
+        request.allowsExpensiveNetworkAccess = allowsCellularDownload
+        request.allowsConstrainedNetworkAccess = true
+        request.timeoutInterval = 300
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("DarkAI/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        return request
+    }
+
     private func coreMLDownloadState(for model: CatalogModel) -> (completedBytes: Int64, pending: [CoreMLPackageFile]) {
         let installedPath = Self.installDirectory(for: model.kind).appendingPathComponent(model.fileName)
         var completedBytes: Int64 = 0
@@ -862,10 +894,7 @@ final class ModelDownloadManager: NSObject, ObservableObject {
             // dead partial and failing identically forever. See `finish`'s coreML branch.
             resumedTaskIDs.insert(task.taskIdentifier)
         } else {
-            var request = URLRequest(url: file.url)
-            request.allowsCellularAccess = allowsCellularDownload
-            request.allowsExpensiveNetworkAccess = allowsCellularDownload
-            request.timeoutInterval = 60
+            let request = makeDownloadRequest(url: file.url)
             task = session.downloadTask(with: request)
         }
         task.countOfBytesClientExpectsToReceive = file.byteSize
@@ -915,12 +944,11 @@ final class ModelDownloadManager: NSObject, ObservableObject {
             task = session.downloadTask(withResumeData: resumeData)
             LogManager.shared.log("ModelDownload: resuming \(model.displayName)")
         } else {
-            var request = URLRequest(url: model.url)
-            request.allowsCellularAccess = allowsCellularDownload
-            request.allowsExpensiveNetworkAccess = allowsCellularDownload
-            request.timeoutInterval = 60
+            let request = makeDownloadRequest(url: model.url)
             task = session.downloadTask(with: request)
-            LogManager.shared.log("ModelDownload: starting \(model.displayName) (\(model.sizeDescription))")
+            LogManager.shared.log(
+                "ModelDownload: starting \(model.displayName) (\(model.sizeDescription))"
+            )
         }
         task.countOfBytesClientExpectsToReceive = model.byteSize
         // Read back by `reattachSurvivingTasks` if this task outlives the app process — see
@@ -1034,6 +1062,45 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     /// corrupt model, and llama.cpp's failure mode for that is a crash rather than an error.
     /// `nonisolated`: pure file I/O over its two parameters, touching no instance state — the
     /// `didFinishDownloadingTo` delegate call relies on that to run this off the main actor.
+    private nonisolated func validateHTTPResponse(_ response: URLResponse?) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "ModelDownload.HTTP",
+                code: -1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "The server did not return a valid HTTP response."
+                ]
+            )
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message: String
+            switch httpResponse.statusCode {
+            case 401:
+                message = "Authentication is required by the server."
+            case 403:
+                message = "Access was denied by the server (HTTP 403)."
+            case 404:
+                message = "The requested model was not found (HTTP 404)."
+            case 408:
+                message = "The server took too long to respond (HTTP 408)."
+            case 429:
+                message = "Too many requests. Try again later (HTTP 429)."
+            case 500...599:
+                message = "The remote server returned an error (HTTP \(httpResponse.statusCode))."
+            default:
+                message = "The server returned HTTP \(httpResponse.statusCode)."
+            }
+
+            throw NSError(
+                domain: "ModelDownload.HTTP",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+    }
+
     private nonisolated func verify(fileAt url: URL, against model: CatalogModel) throws {
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
         guard size == model.byteSize else {
@@ -1056,7 +1123,10 @@ final class ModelDownloadManager: NSObject, ObservableObject {
             // equivalent of the GGUF magic-byte check below — safetensors has no fixed magic
             // bytes of its own to check instead.
             guard let lenData = try handle.read(upToCount: 8), lenData.count == 8 else { throw corruptError }
-            let headerLen = lenData.withUnsafeBytes { $0.load(as: UInt64.self).littleEndian }
+            let headerLen = lenData.enumerated().reduce(UInt64(0)) {
+                result, item in
+                result | (UInt64(item.element) << (UInt64(item.offset) * 8))
+            }
             guard headerLen > 0, headerLen < 100_000_000,
                   let headerBytes = try handle.read(upToCount: Int(headerLen)),
                   (try? JSONSerialization.jsonObject(with: headerBytes)) != nil else {
@@ -1101,9 +1171,11 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         )
     }
 
-    let version = versionData.withUnsafeBytes {
-        $0.load(as: UInt32.self).littleEndian
-    }
+    let version =
+        UInt32(versionData[0]) |
+        (UInt32(versionData[1]) << 8) |
+        (UInt32(versionData[2]) << 16) |
+        (UInt32(versionData[3]) << 24)
 
     guard version == 2 || version == 3 else {
         throw NSError(
@@ -1205,13 +1277,28 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
             }
 
             if let coreMLFile {
-                await MainActor.run {
-                    self.finishCoreMLFile(coreMLFile, tempFile: temporaryCopy, model: model)
+                do {
+                    try self.validateHTTPResponse(downloadTask.response)
+
+                    await MainActor.run {
+                        self.finishCoreMLFile(
+                            coreMLFile,
+                            tempFile: temporaryCopy,
+                            model: model
+                        )
+                    }
+                } catch {
+                    try? FileManager.default.removeItem(at: temporaryCopy)
+
+                    await MainActor.run {
+                        self.finish(model, with: error)
+                    }
                 }
                 return
             }
 
             do {
+                try self.validateHTTPResponse(downloadTask.response)
                 try self.verify(fileAt: temporaryCopy, against: model)
 
                 let installDirectory = Self.installDirectory(for: model.kind)
