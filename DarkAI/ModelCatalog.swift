@@ -1300,6 +1300,20 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
                 try FileManager.default.moveItem(at: temporaryCopy, to: destination)
                 AppFiles.excludeFromBackup(destination)
 
+                // Verify the installed file itself before declaring success. This prevents the UI
+                // from immediately showing GET again if the filesystem move succeeded but the final
+                // file is not exactly the catalog size.
+                let installedSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
+                guard installedSize == model.byteSize else {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw NSError(
+                        domain: "ModelDownload",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "The model was downloaded but the installed file is incomplete (\(installedSize) / \(model.byteSize) bytes)."]
+                    )
+                }
+
                 await MainActor.run {
                     // The partial is worthless now, and the ledger entry is what lets the app
                     // tell the user *which* model vanished if this device is ever restored
@@ -1315,6 +1329,7 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
 
                     LogManager.shared.log("ModelDownload: installed \(model.fileName)")
                     self.lastCompletedModelID = model.id
+                    self.invalidateInstalledCache(for: model.id)
                     self.finish(model, with: nil)
                 }
             } catch {
