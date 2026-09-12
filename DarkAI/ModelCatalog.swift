@@ -547,8 +547,8 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     /// the most likely thing behind "I have to download the model again after every update".
     @Published private(set) var resumableModelIDs: Set<String> = []
 
-    /// Enabled by default so model downloads are not silently blocked on cellular networks.
-    /// Users can disable this in the app's download settings.
+    /// Off by default. A ~1 GB download on a metered plan is not something to start on the
+    /// user's behalf without an explicit opt-in.
     @Published var allowsCellularDownload: Bool =
         UserDefaults.standard.object(forKey: "allowsCellularDownload") as? Bool ?? true {
         didSet {
@@ -596,8 +596,6 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
         configuration.waitsForConnectivity = true
-
-        // Model files can be several gigabytes, so don't use a short request timeout.
         configuration.timeoutIntervalForRequest = 300
         configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
 
@@ -1067,26 +1065,19 @@ final class ModelDownloadManager: NSObject, ObservableObject {
             throw NSError(
                 domain: "ModelDownload.HTTP",
                 code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "The server did not return a valid HTTP response."
-                ]
+                userInfo: [NSLocalizedDescriptionKey:
+                    "The server did not return a valid HTTP response."]
             )
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let message: String
             switch httpResponse.statusCode {
-            case 401:
-                message = "Authentication is required by the server."
-            case 403:
-                message = "Access was denied by the server (HTTP 403)."
-            case 404:
-                message = "The requested model was not found (HTTP 404)."
-            case 408:
-                message = "The server took too long to respond (HTTP 408)."
-            case 429:
-                message = "Too many requests. Try again later (HTTP 429)."
+            case 401: message = "Authentication is required by the server."
+            case 403: message = "Access was denied by the server (HTTP 403)."
+            case 404: message = "The requested model was not found (HTTP 404)."
+            case 408: message = "The server took too long to respond (HTTP 408)."
+            case 429: message = "Too many requests. Try again later (HTTP 429)."
             case 500...599:
                 message = "The remote server returned an error (HTTP \(httpResponse.statusCode))."
             default:
@@ -1289,7 +1280,6 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
                     }
                 } catch {
                     try? FileManager.default.removeItem(at: temporaryCopy)
-
                     await MainActor.run {
                         self.finish(model, with: error)
                     }
@@ -1337,7 +1327,8 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
     await MainActor.run {
         self.finish(model, with: error)
     }
-}
+        }
+    }
 
     /// One file of a `.coreML` multi-file download has finished — verify its size, move it into
     /// place at its `relativePath`, and either continue the queue or (once every file has landed)
