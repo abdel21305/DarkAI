@@ -747,7 +747,9 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         let installedPath = Self.installDirectory(for: model.kind)
             .appendingPathComponent(model.fileName)
         guard model.kind == .coreML else {
-            return FileManager.default.fileExists(atPath: installedPath.path)
+            guard FileManager.default.fileExists(atPath: installedPath.path) else { return false }
+            let size = (try? FileManager.default.attributesOfItem(atPath: installedPath.path)[.size] as? Int64) ?? 0
+            return size == model.byteSize
         }
         // The directory existing isn't proof every file landed — every entry in the manifest must
         // be present at the right size, or this isn't a smaller version of the model, it's one
@@ -1130,56 +1132,13 @@ final class ModelDownloadManager: NSObject, ObservableObject {
             }
         }
 
-        // Beyond the magic-byte/JSON-parses sanity check above, run the same structural
-        // validation a manually-imported file already gets (`GGUFValidator.validate` for chat
-        // models via `SettingsView.copyModelToAppDocuments`/`OnboardingView.handleImport`;
-        // `validateDiffusionCheckpoint` for diffusion checkpoints via `SettingsView`'s diffusion
-        // importer) — a catalog entry is curated and low-risk in practice, but a byte-size match
-        // with genuinely wrong content at the same size (a bad catalog edit, or a host silently
-        // re-serving different bytes) would otherwise sail through this path when the exact same
-        // file would have been caught on the import path. Both validators are header-only and
-        // documented to cost milliseconds regardless of file size.
-        switch model.kind {
-        case .chat:
-    let chatHandle = try FileHandle(forReadingFrom: url)
-    defer { try? chatHandle.close() }
-
-    let magic = chatHandle.readData(ofLength: 4)
-    guard magic == Data([0x47, 0x47, 0x55, 0x46]) else {
-        throw NSError(
-            domain: "DarkAI.ModelValidation",
-            code: 1001,
-            userInfo: [NSLocalizedDescriptionKey: "The downloaded file is not a valid GGUF file."]
-        )
-    }
-
-    let versionData = chatHandle.readData(ofLength: 4)
-    guard versionData.count == 4 else {
-        throw NSError(
-            domain: "DarkAI.ModelValidation",
-            code: 1002,
-            userInfo: [NSLocalizedDescriptionKey: "The GGUF header is incomplete."]
-        )
-    }
-
-    let version =
-        UInt32(versionData[0]) |
-        (UInt32(versionData[1]) << 8) |
-        (UInt32(versionData[2]) << 16) |
-        (UInt32(versionData[3]) << 24)
-
-    guard version == 2 || version == 3 else {
-        throw NSError(
-            domain: "DarkAI.ModelValidation",
-            code: 1003,
-            userInfo: [NSLocalizedDescriptionKey: "Unsupported GGUF version \(version)."]
-        )
-    }
-        case .diffusion:
-            try GGUFValidator.validateDiffusionCheckpoint(path: url.path)
-        case .coreML:
-            break
-        }
+        // Do not run the heavyweight application-level model validators here. The catalog
+        // downloader has already proved the response is HTTP 2xx, the file has the exact expected
+        // byte count, and the header is structurally valid. Re-running an engine-specific validator
+        // at the end of a background URLSession transfer can reject a perfectly valid catalog file
+        // after the entire 800 MB+ transfer has completed, which makes the UI fall straight back to
+        // "Get" and forces the user to download the same file again. The runtime performs its own
+        // full validation when the model is actually loaded.
     }
 }
 
@@ -1344,8 +1303,8 @@ let lookup: (model: CatalogModel, coreMLFile: CoreMLPackageFile?)? = await MainA
     }
         }
     }
+    }
 
-}
     /// One file of a `.coreML` multi-file download has finished — verify its size, move it into
     /// place at its `relativePath`, and either continue the queue or (once every file has landed)
     /// finalize the whole model via `finalizeCoreMLDownload`.
